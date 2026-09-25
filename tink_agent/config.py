@@ -20,6 +20,7 @@ class Config:
     tone_dominance_min: float = 0.9
     tone_tonality_min: float = 0.5
     tone_debounce_ms: int = 300
+    tone_tonality_min_by_slot: dict = field(default_factory=dict)  # {slot: min}
     vad_rms_start: float = 800
     vad_rms_end: float = 500
     vad_hangover_ms: int = 800
@@ -41,6 +42,14 @@ class Config:
     # "com.apple.Terminal"). Empty list = act in any app.
     target_apps: list = field(default_factory=list)
     target_app: str = ""  # legacy single value; migrated into target_apps on load
+    # Handle-as-push-to-talk: the Ting's line-out is digitally silent until the
+    # handle is squeezed, then carries a faint noise floor. Hold `handle_key`
+    # (a pynput Key name, e.g. "f13") while the handle is held; "" disables.
+    handle_key: str = ""
+    handle_rms_on: float = 6.0
+    handle_rms_off: float = 3.0
+    handle_on_blocks: int = 2
+    handle_off_blocks: int = 8
     output_mode: str = "type"
     enabled: bool = True
     start_at_login: bool = False
@@ -55,6 +64,7 @@ class Config:
         # JSON object keys must be strings; normalise int-keyed maps.
         d["tones"] = {str(k): v for k, v in self.tones.items()}
         d["slot_actions"] = {str(k): v for k, v in self.slot_actions.items()}
+        d["tone_tonality_min_by_slot"] = {str(k): v for k, v in self.tone_tonality_min_by_slot.items()}
         return d
 
     @classmethod
@@ -64,6 +74,8 @@ class Config:
             d["tones"] = {int(k): int(v) for k, v in d["tones"].items()}
         if "slot_actions" in d:
             d["slot_actions"] = {int(k): str(v) for k, v in d["slot_actions"].items()}
+        if "tone_tonality_min_by_slot" in d:
+            d["tone_tonality_min_by_slot"] = {int(k): float(v) for k, v in d["tone_tonality_min_by_slot"].items()}
         # Backfill mode-B slots (5-8) for configs written before they existed,
         # without clobbering any slot the user has set.
         defaults = cls()

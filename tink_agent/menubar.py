@@ -74,7 +74,8 @@ class TinkAgentApp(rumps.App):
         c = self.config
         det = ToneDetector(c.tones, c.tone_rms_min, c.tone_dominance_min,
                            c.tone_debounce_ms, c.sample_rate,
-                           tonality_min=c.tone_tonality_min)
+                           tonality_min=c.tone_tonality_min,
+                           tonality_min_by_slot=c.tone_tonality_min_by_slot)
         vg = VoiceGate(c.vad_rms_start, c.vad_rms_end, c.vad_hangover_ms,
                        c.min_utterance_ms, c.sample_rate, c.block_size,
                        c.max_utterance_ms)
@@ -200,6 +201,23 @@ class TinkAgentApp(rumps.App):
         if self.capture and self.capture.is_running:
             self.stop_listening(None)
             self.start_listening(None)
+
+    def set_handle_key(self, name: str):
+        """Key held while the Ting is live ("" = off). Applies immediately; if the
+        old key is currently held, release it first so nothing stays stuck."""
+        old = self.config.handle_key
+        if old and getattr(self.engine, "_handle_held", False):
+            self.engine.router.hold_key(old, False)
+            self.engine._handle_held = False
+            self.engine._handle_run = 0
+        self.config.handle_key = (name or "").strip().lower()
+        self.config.save()
+
+    def set_handle_release_seconds(self, seconds: float):
+        """Silence needed before the push-to-talk key is released."""
+        blocks = max(1, int(round(float(seconds) * self.config.sample_rate / self.config.block_size)))
+        self.config.handle_off_blocks = blocks
+        self.config.save()
 
     def set_slot_action(self, slot, action_id: str):
         """Assign the action a slot fires. Persists to config and updates the
