@@ -47,8 +47,14 @@ briefly dips under the detector floor. Two detector changes make it usable:
 - A press now ends only after 8 consecutive sub-floor blocks (400 ms), so the
   beating ring does not re-fire after a dip.
 
-Slot 2 ("claps") is **not usable as a button**: it is ~4 s of crowd noise, which
-the handle logic reads as speech (it wakes the push-to-talk key), and the bell
-hit at its start is not clean enough to fire live. Use slots 1, 3 and 4 only.
-Mapping: horn (slot 1) and beep (slot 4) → Enter, bell (slot 3) → Tab.
-Tab-then-Enter is grey on slot 3, white, grey.
+Slot 2 ("claps", ~4 s of applause) is not a tone, so the tone detector cannot
+use it. It is handled by `NoiseBurstDetector` instead: applause is loud and
+*unvoiced* for seconds at a time, whereas speech shows pitch in nearly every
+half second (longest unvoiced run in my speech recordings: 3 blocks; applause:
+50–64). `noise_action` fires after 12 consecutive loud, unvoiced, non-tone
+blocks (0.6 s). The burst is treated like a tone: it releases the push-to-talk
+key, is never sent to the STT, and any fires within one continuous sound count
+as one press (the sample also contains a bell hit).
+
+Mapping: horn (slot 1) and beep (slot 4) → Enter, bell (slot 3) and applause
+(slot 2) → Tab. Tab-then-Enter is one white press either way.

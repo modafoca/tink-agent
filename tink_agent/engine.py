@@ -17,6 +17,15 @@ class Engine:
         self._handle_held = False
         self._handle_run = 0        # consecutive blocks on the "other" side of the threshold
         self._handle_guard = 0      # blocks to ignore after a button tone
+        self._since_fire = 10**6    # blocks since the last button fire (tone or burst)
+        self._press_open = False    # a fire happened and the sound has not yet gone quiet
+        self._quiet_run = 0         # consecutive sub-floor blocks
+        self.noise = None
+        if getattr(config, "noise_action", ""):
+            from .detector import NoiseBurstDetector
+            self.noise = NoiseBurstDetector(rms_min=config.tone_rms_min,
+                                            voicing_max=config.noise_voicing_max,
+                                            min_blocks=config.noise_blocks)
         self._on_event = on_event or (lambda kind, payload: None)
         # Optional safety guard: when config.target_app is set, actions/typing
         # only fire if the frontmost app's name or bundle id contains it.
@@ -51,7 +60,42 @@ class Engine:
         if not self.enabled:
             return
         slot = self.detector.process(block)
-        self._update_handle(block, slot)
+        burst = False
+        self._since_fire += 1
+        # One physical press = one continuous sound. After any fire, further
+        # fires are ignored until the input has been below the tone floor for
+        # 8 blocks (400 ms). This collapses a sample that contains both a bell
+        # hit and applause into a single action.
+        import numpy as _np
+        _b = _np.asarray(block, dtype=_np.float64).reshape(-1)
+        _rms = float(_np.sqrt(_np.mean(_b * _b))) if _b.size else 0.0
+        if _rms < self.config.tone_rms_min:
+            self._quiet_run += 1
+            if self._quiet_run >= 8:
+                self._press_open = False
+        else:
+            self._quiet_run = 0
+        if self.noise is not None and slot is None:
+            burst = self.noise.process(block, self.detector.tone_active)
+        if self._press_open:
+            slot, burst = None, False
+        if slot is not None or burst:
+            self._since_fire = 0
+            self._press_open = True
+        self._update_handle(block, slot if slot is not None else ("noise" if burst else None))
+        if burst:
+            front = self._front()
+            action = self.config.noise_action
+            if self._target_ok(front):
+                self.router.fire_action(action)
+                self._on_event("noise", action)
+                self._on_event("action", action)
+                if self.logger:
+                    self.logger.action("noise", action, front)
+            else:
+                self._on_event("blocked", "noise")
+                if self.logger:
+                    self.logger.blocked("noise", front)
         if slot is not None:
             front = self._front()
             if self._target_ok(front):
@@ -64,10 +108,11 @@ class Engine:
                 self._on_event("blocked", slot)
                 if self.logger:
                     self.logger.blocked(f"slot{slot}", front)
-        if slot is not None:
+        if slot is not None or burst:
             self._tone_in_utt = True
             self._post_tone = 16  # ~800 ms at 50 ms blocks: covers the beep's decay
-        gate_closed = self.detector.tone_active or self._post_tone > 0
+        noise_active = self.noise is not None and self.noise.active
+        gate_closed = self.detector.tone_active or noise_active or self._post_tone > 0
         if self._post_tone > 0:
             self._post_tone -= 1
         utterance = self.voicegate.process(block, gate_closed)
@@ -90,7 +135,7 @@ class Engine:
         import numpy as _np
         b = _np.asarray(block, dtype=_np.float64).reshape(-1)
         rms = float(_np.sqrt(_np.mean(b * b))) if b.size else 0.0
-        tone = self.detector.tone_active or slot is not None
+        tone = self.detector.tone_active or slot is not None or (self.noise is not None and self.noise.active)
         if slot is not None:
             self._handle_guard = 20  # ~1 s: ignore the beep's tail as "sound"
             if self._handle_held:

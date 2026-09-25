@@ -1,7 +1,7 @@
 import wave
 import numpy as np
 from pathlib import Path
-from tink_agent.detector import goertzel, ToneDetector
+from tink_agent.detector import goertzel, ToneDetector, NoiseBurstDetector
 from tink_agent.config import Config
 
 FIX = Path(__file__).parent / "fixtures" / "tones.wav"
@@ -137,3 +137,37 @@ def test_press_survives_brief_dip_but_ends_after_hangover():
     for _ in range(8):
         det.process(silence)
     assert det.process(tone) == 1
+
+
+def _noise(rms=1500, seed=0):
+    rng = np.random.default_rng(seed)
+    x = rng.standard_normal(800)
+    return x / np.sqrt(np.mean(x * x)) * rms
+
+
+def _voiced(f0=120, rms=1500):
+    t = np.arange(800) / 16000
+    x = sum(np.sin(2 * np.pi * f0 * k * t) / k for k in range(1, 12))  # pitched, harmonic
+    return x / np.sqrt(np.mean(x * x)) * rms
+
+
+def test_noise_burst_fires_once_after_min_blocks_and_rearms_after_silence():
+    d = NoiseBurstDetector(rms_min=300, voicing_max=0.35, min_blocks=4, hang_blocks=3)
+    fires = [d.process(_noise(seed=i)) for i in range(10)]
+    assert fires == [False, False, False, True, False, False, False, False, False, False]
+    assert d.active
+    for _ in range(3):
+        d.process(np.zeros(800))
+    assert not d.active
+    assert [d.process(_noise(seed=i)) for i in range(4)][-1] is True
+
+
+def test_noise_burst_ignores_voiced_speech_and_tones():
+    d = NoiseBurstDetector(rms_min=300, voicing_max=0.35, min_blocks=4)
+    assert not any(d.process(_voiced()) for _ in range(20))
+    d2 = NoiseBurstDetector(rms_min=300, voicing_max=0.35, min_blocks=4)
+    assert not any(d2.process(_noise(seed=i), tone_active=True) for i in range(20))
+    # A short unvoiced burst (a fricative) shorter than min_blocks never fires.
+    d3 = NoiseBurstDetector(rms_min=300, voicing_max=0.35, min_blocks=4)
+    seq = [_noise(seed=1), _noise(seed=2), _noise(seed=3), _voiced()] * 3
+    assert not any(d3.process(b) for b in seq)

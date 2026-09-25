@@ -60,5 +60,6 @@
   "log_path": "",
   "tone_tonality_min_by_slot": {
     "3": 0.25
-  }
+  },
+  "noise_action": "tab"
 }

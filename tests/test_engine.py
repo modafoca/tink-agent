@@ -245,3 +245,35 @@ def test_plain_utterance_is_still_transcribed():
     for _ in range(40):
         eng.handle_block(np.zeros(800, dtype=np.int16))
     assert ("transcript", "approve this") in events
+
+
+def test_noise_burst_fires_action_releases_handle_and_is_not_transcribed():
+    kb, events = FakeKeyboard(), []
+    eng = _engine(kb, events, handle_key="f13", handle_on_blocks=2, handle_off_blocks=50,
+                  noise_action="tab", noise_blocks=4)
+    for i in range(8):                     # applause: loud, unvoiced
+        eng.handle_block(_noise_block(1500))
+    assert ("action", "tab") in events
+    assert ("press", "TAB") in kb.events
+    assert _keys(kb) == [("press", "F13"), ("release", "F13")]   # woke, then released by the burst
+    for _ in range(40):
+        eng.handle_block(np.zeros(800, dtype=np.int16))
+    assert not any(k == "transcript" for k, _ in events)
+    assert _keys(kb) == [("press", "F13"), ("release", "F13")]   # burst tail did not re-hold
+
+
+def test_noise_burst_disabled_by_default():
+    kb, events = FakeKeyboard(), []
+    eng = _engine(kb, events)
+    for _ in range(20):
+        eng.handle_block(_noise_block(1500))
+    assert not any(k in ("noise",) for k, _ in events)
+
+
+def test_noise_burst_right_after_a_tone_is_the_same_press():
+    kb, events = FakeKeyboard(), []
+    eng = _engine(kb, events, noise_action="tab", noise_blocks=4)
+    eng.handle_block(_tone_block(1500))     # e.g. the bell hit at the start of the applause
+    for _ in range(12):
+        eng.handle_block(_noise_block(1500))
+    assert [p for k, p in events if k == "action"] == ["enter"]   # one fire, not two

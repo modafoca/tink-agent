@@ -21,6 +21,12 @@ class Config:
     tone_tonality_min: float = 0.5
     tone_debounce_ms: int = 300
     tone_tonality_min_by_slot: dict = field(default_factory=dict)  # {slot: min}
+    # Non-tonal sample as a button: fire `noise_action` after `noise_blocks`
+    # consecutive loud, unvoiced, non-tone blocks (e.g. the FX Mic's applause).
+    # "" disables.
+    noise_action: str = ""
+    noise_voicing_max: float = 0.35
+    noise_blocks: int = 12
     vad_rms_start: float = 800
     vad_rms_end: float = 500
     vad_hangover_ms: int = 800

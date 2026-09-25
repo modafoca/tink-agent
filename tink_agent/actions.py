@@ -79,6 +79,13 @@ class ActionRouter:
         self._dispatch(lambda a=action: self._run(self._perform, a))
         return action
 
+    def fire_action(self, action: str) -> str:
+        """Fire an action id directly (not tied to a tone slot)."""
+        if not action or action == "noop":
+            return "noop"
+        self._dispatch(lambda a=action: self._run(self._perform, a))
+        return action
+
     def _run(self, fn, arg) -> None:
         """Execute a keyboard side-effect (on the main thread), trapping errors
         (e.g. missing Accessibility) so they never crash the calling thread."""

@@ -149,3 +149,57 @@ class VoiceGate:
         else:
             self._silence = 0
         return None
+
+
+class NoiseBurstDetector:
+    """Recognise a sustained *unvoiced* loud sound (e.g. the FX Mic's factory
+    applause sample) as a button. Speech has pitch in nearly every half second;
+    applause never does. Fires once per burst after `min_blocks` consecutive
+    loud, unvoiced, non-tone blocks; re-arms after `hang_blocks` of silence.
+
+    `active` stays True for the rest of the burst so callers can treat it like a
+    tone (not "sound" for push-to-talk, not speech for the voice gate)."""
+
+    def __init__(self, rms_min=300.0, voicing_max=0.35, min_blocks=12,
+                 hang_blocks=8, lag_min=40, lag_max=200):
+        self.rms_min = float(rms_min)
+        self.voicing_max = float(voicing_max)
+        self.min_blocks = int(min_blocks)
+        self.hang_blocks = int(hang_blocks)
+        self.lag_min, self.lag_max = int(lag_min), int(lag_max)
+        self._run = 0
+        self._silent = 0
+        self._fired = False
+        self.active = False
+
+    @staticmethod
+    def voicing(block, lag_min=40, lag_max=200) -> float:
+        b = np.asarray(block, dtype=np.float64).reshape(-1)
+        b = b - b.mean()
+        e = float(np.dot(b, b))
+        if e < 1.0:
+            return 0.0
+        ac = np.correlate(b, b, "full")[len(b) - 1:] / e
+        return float(ac[lag_min:lag_max].max())
+
+    def process(self, block, tone_active: bool = False) -> bool:
+        b = np.asarray(block, dtype=np.float64).reshape(-1)
+        rms = float(np.sqrt(np.mean(b * b))) if b.size else 0.0
+        if rms < self.rms_min:
+            self._run = 0
+            self._silent += 1
+            if self._silent >= self.hang_blocks:
+                self._fired = False
+                self.active = False
+            return False
+        self._silent = 0
+        unvoiced = (not tone_active) and self.voicing(b, self.lag_min, self.lag_max) < self.voicing_max
+        self._run = self._run + 1 if unvoiced else 0
+        if self._run >= self.min_blocks:
+            self.active = True
+            if not self._fired:
+                self._fired = True
+                return True
+        elif self._run == 0:
+            self.active = False
+        return False
