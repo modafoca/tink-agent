@@ -1,0 +1,64 @@
+{
+  "device_name": "CUBILUX HLMS-C4 Line IN",
+  "sample_rate": 16000,
+  "block_size": 800,
+  "tones": {
+    "1": 1000,
+    "2": 380,
+    "3": 3949,
+    "4": 700,
+    "5": 1400,
+    "6": 2000,
+    "7": 2751,
+    "8": 5685
+  },
+  "tone_rms_min": 300,
+  "tone_dominance_min": 0.8,
+  "tone_tonality_min": 0.5,
+  "tone_debounce_ms": 1500,
+  "vad_rms_start": 800,
+  "vad_rms_end": 500,
+  "vad_hangover_ms": 1800,
+  "min_utterance_ms": 400,
+  "max_utterance_ms": 30000,
+  "stt_model": "",
+  "mw_binary": "/Applications/MacWhisper.app/Contents/MacOS/mw",
+  "stt_backend": "custom",
+  "stt_command": [
+    "true"
+  ],
+  "stt_output": "all",
+  "slot_actions": {
+    "1": "enter",
+    "2": "enter",
+    "3": "tab",
+    "4": "noop",
+    "5": "noop",
+    "6": "noop",
+    "7": "noop",
+    "8": "noop"
+  },
+  "target_apps": [
+    "com.apple.Terminal",
+    "Terminal",
+    "com.anthropic.claudefordesktop",
+    "Claude",
+    "com.openai.codex",
+    "ChatGPT"
+  ],
+  "target_app": "",
+  "handle_key": "f13",
+  "handle_rms_on": 6.0,
+  "handle_rms_off": 3.0,
+  "handle_on_blocks": 2,
+  "handle_off_blocks": 50,
+  "output_mode": "type",
+  "enabled": true,
+  "start_at_login": false,
+  "onboarding_done": true,
+  "log_activity": true,
+  "log_path": "",
+  "tone_tonality_min_by_slot": {
+    "3": 0.25
+  }
+}
