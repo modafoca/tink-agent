@@ -1,6 +1,7 @@
 from __future__ import annotations
 import sys
 import numpy as np
+import time
 
 
 class DeviceNotFound(Exception):
@@ -89,6 +90,7 @@ class AudioCapture:
         self._stream_factory = stream_factory
         self._on_status = on_status or _default_on_status
         self._stream = None
+        self.last_block_at = None   # time.monotonic() of the last delivered block
 
     def _make_stream(self, device_index):
         if self._stream_factory is not None:
@@ -106,12 +108,14 @@ class AudioCapture:
                 self._on_status(str(status))
             except Exception:  # noqa: BLE001 — logging must never break capture
                 pass
+        self.last_block_at = time.monotonic()
         self.on_block(np.asarray(indata, dtype=np.int16).reshape(-1))
 
     def start(self):
         idx = self._resolve(self.device_name)
         self._stream = self._make_stream(idx)
         self._stream.start()
+        self.last_block_at = time.monotonic()
 
     def stop(self):
         if self._stream is not None:
@@ -122,3 +126,20 @@ class AudioCapture:
     @property
     def is_running(self) -> bool:
         return self._stream is not None
+
+    def stalled(self, max_silence_s: float = 3.0, now=None) -> bool:
+        """True when the stream is open but no block has arrived for a while:
+        CoreAudio stops calling back when the input device is unplugged."""
+        if self._stream is None or self.last_block_at is None:
+            return False
+        now = time.monotonic() if now is None else now
+        return (now - self.last_block_at) > max_silence_s
+
+
+def device_present(name: str, query_fn=None) -> bool:
+    """Whether an input device matching `name` is currently connected."""
+    try:
+        resolve_device(name, query_fn)
+        return True
+    except DeviceNotFound:
+        return False

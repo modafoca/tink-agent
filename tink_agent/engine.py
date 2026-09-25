@@ -125,6 +125,17 @@ class Engine:
         elif not self.voicegate.active and self._post_tone == 0:
             self._tone_in_utt = False
 
+    def reset_handle(self):
+        """Release the push-to-talk key if held (e.g. after the audio device
+        vanished mid-squeeze) and clear the handle state."""
+        key = getattr(self.config, "handle_key", "")
+        if key and self._handle_held:
+            self.router.hold_key(key, False)
+            self._on_event("handle", "released")
+        self._handle_held = False
+        self._handle_run = 0
+        self._handle_guard = 0
+
     def _update_handle(self, block, slot=None):
         """Hold handle_key while the Ting is 'live': down on the first non-tone sound
         (the squeeze hiss or speech), up after handle_off_blocks of silence or as soon

@@ -277,3 +277,15 @@ def test_noise_burst_right_after_a_tone_is_the_same_press():
     for _ in range(12):
         eng.handle_block(_noise_block(1500))
     assert [p for k, p in events if k == "action"] == ["enter"]   # one fire, not two
+
+
+def test_reset_handle_releases_a_held_key():
+    kb, events = FakeKeyboard(), []
+    eng = _engine(kb, events, handle_key="f13", handle_on_blocks=2, handle_off_blocks=50)
+    for _ in range(3):
+        eng.handle_block(_noise_block(50))
+    assert _keys(kb) == [("press", "F13")]
+    eng.reset_handle()                      # audio device vanished mid-squeeze
+    assert _keys(kb) == [("press", "F13"), ("release", "F13")]
+    eng.reset_handle()                      # idempotent
+    assert _keys(kb) == [("press", "F13"), ("release", "F13")]
