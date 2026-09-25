@@ -9,6 +9,7 @@ class FakeKeyboard:
     class Key:
         enter = "ENTER"; esc = "ESC"; ctrl = "CTRL"
         tab = "TAB"; shift = "SHIFT"; up = "UP"; down = "DOWN"
+        f13 = "F13"
     def __init__(self): self.events = []
     def press(self, k): self.events.append(("press", k))
     def release(self, k): self.events.append(("release", k))
@@ -34,8 +35,8 @@ class FakeLogger:
 
 
 def _engine(kb, events, target_app="", frontmost="Terminal com.apple.Terminal",
-            logger=None):
-    c = Config(target_apps=[target_app] if target_app else [])
+            logger=None, **cfg):
+    c = Config(target_apps=[target_app] if target_app else [], **cfg)
     det = ToneDetector(c.tones, c.tone_rms_min, c.tone_dominance_min,
                        c.tone_debounce_ms, c.sample_rate)
     vg = VoiceGate(c.vad_rms_start, c.vad_rms_end, c.vad_hangover_ms,
@@ -172,3 +173,75 @@ def test_slot4_shift_tab():
     assert ("press", "SHIFT") not in kb.events  # shift is held via context mgr
     assert ("press", "TAB") in kb.events
     assert ("tone", 4) in events
+
+
+def _noise_block(rms):
+    rng = np.random.default_rng(0)
+    x = rng.standard_normal(800)
+    return (x / np.sqrt(np.mean(x * x)) * rms).astype(np.int16)
+
+
+def _keys(kb):
+    return [e for e in kb.events if e[1] == "F13"]
+
+
+def test_handle_key_held_on_sound_and_released_after_silence():
+    kb, events = FakeKeyboard(), []
+    eng = _engine(kb, events, handle_key="f13", handle_on_blocks=2, handle_off_blocks=4)
+    hiss = _noise_block(50)            # squeeze noise floor: above handle_rms_on, below any tone/VAD floor
+    eng.handle_block(hiss)
+    assert _keys(kb) == []
+    eng.handle_block(hiss)
+    assert _keys(kb) == [("press", "F13")]
+    for _ in range(3):
+        eng.handle_block(np.zeros(800, dtype=np.int16))
+    assert _keys(kb) == [("press", "F13")]          # not yet: 3 < handle_off_blocks
+    eng.handle_block(np.zeros(800, dtype=np.int16))
+    assert _keys(kb) == [("press", "F13"), ("release", "F13")]
+    assert ("handle", "held") in events and ("handle", "released") in events
+
+
+def test_handle_key_not_touched_when_disabled():
+    kb, events = FakeKeyboard(), []
+    eng = _engine(kb, events)            # handle_key defaults to ""
+    for _ in range(5):
+        eng.handle_block(_noise_block(50))
+    assert _keys(kb) == []
+
+
+def test_button_tone_releases_handle_key_and_guards_rehold():
+    kb, events = FakeKeyboard(), []
+    eng = _engine(kb, events, handle_key="f13", handle_on_blocks=2, handle_off_blocks=50)
+    for _ in range(3):
+        eng.handle_block(_noise_block(50))
+    assert _keys(kb) == [("press", "F13")]
+    eng.handle_block(_tone_block(1500))   # slot 1 fires
+    assert _keys(kb) == [("press", "F13"), ("release", "F13")]
+    assert ("action", "enter") in events
+    # The tone's tail / decay must not re-hold the key during the guard.
+    for _ in range(10):
+        eng.handle_block(_noise_block(50))
+    assert _keys(kb) == [("press", "F13"), ("release", "F13")]
+
+
+def test_utterance_containing_a_button_tone_is_dropped():
+    kb, events = FakeKeyboard(), []
+    eng = _engine(kb, events)
+    for _ in range(10):                   # speech-level noise opens the voice gate
+        eng.handle_block(_noise_block(1500))
+    eng.handle_block(_tone_block(1500))   # beep inside the utterance
+    for _ in range(40):                   # silence closes the gate
+        eng.handle_block(np.zeros(800, dtype=np.int16))
+    assert ("dropped", "tone in utterance") in events
+    assert not any(e[0] == "type" for e in kb.events)
+    assert not any(k == "transcript" for k, _ in events)
+
+
+def test_plain_utterance_is_still_transcribed():
+    kb, events = FakeKeyboard(), []
+    eng = _engine(kb, events)
+    for _ in range(10):
+        eng.handle_block(_noise_block(1500))
+    for _ in range(40):
+        eng.handle_block(np.zeros(800, dtype=np.int16))
+    assert ("transcript", "approve this") in events

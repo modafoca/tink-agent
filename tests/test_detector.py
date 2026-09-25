@@ -99,3 +99,41 @@ def test_real_speech_fires_no_slots_with_eight_bins():
         if slot is not None:
             fires.append(slot)
     assert fires == []
+
+
+def _blk(freqs, amp=6000, sr=16000, n=800):
+    t = np.arange(n) / sr
+    return sum(np.sin(2 * np.pi * f * t) * amp for f in freqs)
+
+
+def test_per_slot_tonality_override_admits_inharmonic_sample():
+    # A bell-like block: energy split over three partials, so the best single
+    # bin holds ~1/3 of the energy and fails the default 0.5 tonality test.
+    bell = _blk([3949, 5363, 7000])
+    tones = {1: 1000, 2: 380, 3: 3949}
+    strict = ToneDetector(tones, 300, 0.8, 300, 16000, tonality_min=0.5)
+    assert strict.process(bell) is None
+    loose = ToneDetector(tones, 300, 0.8, 300, 16000, tonality_min=0.5,
+                         tonality_min_by_slot={3: 0.25})
+    assert loose.process(bell) == 3
+    # The override must not loosen the other bins: a noisy block near 1000 Hz
+    # with the same 1/3 tonality still fails.
+    noisy = _blk([1000, 1700, 2600])
+    fresh = ToneDetector(tones, 300, 0.8, 300, 16000, tonality_min=0.5,
+                         tonality_min_by_slot={3: 0.25})
+    assert fresh.process(noisy) is None
+
+
+def test_press_survives_brief_dip_but_ends_after_hangover():
+    tone = _blk([1500]); silence = np.zeros(800)
+    det = ToneDetector({1: 1500}, 300, 0.8, 300, 16000)
+    fires = [det.process(tone) for _ in range(10)]
+    assert fires[0] == 1 and fires.count(1) == 1
+    # A 2-block dip (beating/decay) must not re-fire the same press.
+    for _ in range(2):
+        assert det.process(silence) is None
+    assert all(det.process(tone) is None for _ in range(10))
+    # A real gap (>= 8 sub-floor blocks) ends the press; the next tone fires.
+    for _ in range(8):
+        det.process(silence)
+    assert det.process(tone) == 1
