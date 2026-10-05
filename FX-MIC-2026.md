@@ -5,8 +5,10 @@ firmware 1.0.9), using this branch's handle-as-push-to-talk feature.
 
 ## Differences from the original Ting
 
-- Buttons: **orange** = effect preset (no LED = clean, plays no samples),
+- Buttons: **small orange** = effect preset (no LED = clean, plays no samples),
   **white** = sample select, **grey** = play sample.
+- The **large orange handle** is the control you squeeze to speak. Its position
+  is not sent to the Mac; Tink infers speech from the line-out audio.
 - USB-C port is under the removable lower lid. The drive mounts as
   `FX MIC DISK`, not `TINGDISK`.
 - Firmware 1.0.9 did **not** import `1.wav`..`4.wav` / `config.json` from the
@@ -28,12 +30,50 @@ See `examples/config.ep-2350-fx-mic-wispr.json`:
 
 - `handle_key: "f13"` holds F13 while the mic is live. Wispr Flow's push-to-talk
   is set to F13 (key code 105).
+- `handle_rms_on: 80.0`, `handle_rms_off: 55.0`: calibrated start/release
+  thresholds for this FX Mic + Cubilux setup. See the calibration notes below.
+- `handle_on_blocks: 2`, `handle_off_blocks: 50`: start after 100 ms above
+  the start threshold, release after 2.5 seconds below the release threshold
+  (800-sample blocks at 16 kHz).
 - `stt_command: ["true"]` disables local STT; Wispr does the typing.
 - `tones`: 1000 Hz and 380 Hz both map to `enter`; the rest are decoy bins.
 - `target_apps`: Terminal and the Claude desktop app.
 
 Audio path: Ting line-out → Cubilux HLMS-C4 **Line IN** (not MIC IN; the Ting
 is a 2 VRMS line output).
+
+## Handle calibration (Oct 5 2026)
+
+With the earlier 6/3 RMS thresholds, background noise could start Flow without
+speaking and keep F13 held after the handle was released. An initial idle check
+measured below 0.5 RMS, but a later check with the handle released during the
+problem measured 23–38 RMS. Normal speech had a median around 188 RMS. The cause
+of the changing noise floor was not established.
+
+The example now uses **80 RMS to start** and **55 RMS to release**, retaining the
+2.5-second release delay. Live testing confirmed that squeezing and speaking
+started Flow and releasing the handle stopped it. These are setup-specific
+values, not universal defaults; existing user configs are not migrated.
+
+If false starts or stuck recordings return:
+
+1. Measure the released-handle noise while Flow is in the failing state, then
+   measure normal speech with the handle held. Use the same audio input and
+   gain for both checks.
+2. Keep the release threshold above the observed idle noise and the start
+   threshold above release but comfortably below normal speech. If the levels
+   overlap, check the input, cable, gain, and mic state before tuning further.
+3. Update `handle_rms_on` and `handle_rms_off` in
+   `~/.tink-agent/config.json` and restart Tink. Release the handle and stop any
+   active Flow recording before restarting, so a previously held shortcut does
+   not leave a recording running.
+4. Verify both directions: squeeze and speak to start, release and wait about
+   2.5 seconds to stop, then leave the handle released to check for false starts.
+
+This is an audio-triggered shortcut, not a physical button signal. A quiet held
+handle may not start Flow until speech begins; a long enough quiet pause can
+release the shortcut even while the handle remains held. Flow's microphone
+Auto-detect selects its input; Tink's F13 events control this recording path.
 
 ## Bell as a third action (Sep 24 2026)
 
