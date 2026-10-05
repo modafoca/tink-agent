@@ -12,6 +12,20 @@ class Engine:
         self.router = router
         self.logger = logger
         self.enabled = config.enabled
+        self._tone_in_utt = False   # a button tone fired inside the open utterance
+        self._post_tone = 0         # blocks left to keep the voice gate closed after a tone
+        self._handle_held = False
+        self._handle_run = 0        # consecutive blocks on the "other" side of the threshold
+        self._handle_guard = 0      # blocks to ignore after a button tone
+        self._since_fire = 10**6    # blocks since the last button fire (tone or burst)
+        self._press_open = False    # a fire happened and the sound has not yet gone quiet
+        self._quiet_run = 0         # consecutive sub-floor blocks
+        self.noise = None
+        if getattr(config, "noise_action", ""):
+            from .detector import NoiseBurstDetector
+            self.noise = NoiseBurstDetector(rms_min=config.tone_rms_min,
+                                            voicing_max=config.noise_voicing_max,
+                                            min_blocks=config.noise_blocks)
         self._on_event = on_event or (lambda kind, payload: None)
         # Optional safety guard: when config.target_app is set, actions/typing
         # only fire if the frontmost app's name or bundle id contains it.
@@ -46,6 +60,42 @@ class Engine:
         if not self.enabled:
             return
         slot = self.detector.process(block)
+        burst = False
+        self._since_fire += 1
+        # One physical press = one continuous sound. After any fire, further
+        # fires are ignored until the input has been below the tone floor for
+        # 8 blocks (400 ms). This collapses a sample that contains both a bell
+        # hit and applause into a single action.
+        import numpy as _np
+        _b = _np.asarray(block, dtype=_np.float64).reshape(-1)
+        _rms = float(_np.sqrt(_np.mean(_b * _b))) if _b.size else 0.0
+        if _rms < self.config.tone_rms_min:
+            self._quiet_run += 1
+            if self._quiet_run >= 8:
+                self._press_open = False
+        else:
+            self._quiet_run = 0
+        if self.noise is not None and slot is None:
+            burst = self.noise.process(block, self.detector.tone_active)
+        if self._press_open:
+            slot, burst = None, False
+        if slot is not None or burst:
+            self._since_fire = 0
+            self._press_open = True
+        self._update_handle(block, slot if slot is not None else ("noise" if burst else None))
+        if burst:
+            front = self._front()
+            action = self.config.noise_action
+            if self._target_ok(front):
+                self.router.fire_action(action)
+                self._on_event("noise", action)
+                self._on_event("action", action)
+                if self.logger:
+                    self.logger.action("noise", action, front)
+            else:
+                self._on_event("blocked", "noise")
+                if self.logger:
+                    self.logger.blocked("noise", front)
         if slot is not None:
             front = self._front()
             if self._target_ok(front):
@@ -58,9 +108,70 @@ class Engine:
                 self._on_event("blocked", slot)
                 if self.logger:
                     self.logger.blocked(f"slot{slot}", front)
-        utterance = self.voicegate.process(block, self.detector.tone_active)
+        if slot is not None or burst:
+            self._tone_in_utt = True
+            self._post_tone = 16  # ~800 ms at 50 ms blocks: covers the beep's decay
+        noise_active = self.noise is not None and self.noise.active
+        gate_closed = self.detector.tone_active or noise_active or self._post_tone > 0
+        if self._post_tone > 0:
+            self._post_tone -= 1
+        utterance = self.voicegate.process(block, gate_closed)
         if utterance is not None:
-            self._submit(lambda u=utterance: self._handle_utterance(u))
+            if self._tone_in_utt:
+                self._on_event("dropped", "tone in utterance")
+            else:
+                self._submit(lambda u=utterance: self._handle_utterance(u))
+            self._tone_in_utt = False
+        elif not self.voicegate.active and self._post_tone == 0:
+            self._tone_in_utt = False
+
+    def reset_handle(self):
+        """Release the push-to-talk key if held (e.g. after the audio device
+        vanished mid-squeeze) and clear the handle state."""
+        key = getattr(self.config, "handle_key", "")
+        if key and self._handle_held:
+            self.router.hold_key(key, False)
+            self._on_event("handle", "released")
+        self._handle_held = False
+        self._handle_run = 0
+        self._handle_guard = 0
+
+    def _update_handle(self, block, slot=None):
+        """Hold handle_key while the Ting is 'live': down on the first non-tone sound
+        (the squeeze hiss or speech), up after handle_off_blocks of silence or as soon
+        as a button tone fires. Tone blocks never count as sound."""
+        key = getattr(self.config, "handle_key", "")
+        if not key:
+            return
+        import numpy as _np
+        b = _np.asarray(block, dtype=_np.float64).reshape(-1)
+        rms = float(_np.sqrt(_np.mean(b * b))) if b.size else 0.0
+        tone = self.detector.tone_active or slot is not None or (self.noise is not None and self.noise.active)
+        if slot is not None:
+            self._handle_guard = 20  # ~1 s: ignore the beep's tail as "sound"
+            if self._handle_held:
+                self._handle_held = False; self._handle_run = 0
+                self.router.hold_key(key, False)
+                self._on_event("handle", "released")
+                if self.logger: self.logger.action("handle", f"{key}:up", self._front())
+            return
+        if self._handle_guard > 0:
+            self._handle_guard -= 1
+            return
+        if not self._handle_held:
+            self._handle_run = self._handle_run + 1 if (rms >= self.config.handle_rms_on and not tone) else 0
+            if self._handle_run >= self.config.handle_on_blocks:
+                self._handle_held = True; self._handle_run = 0
+                self.router.hold_key(key, True)
+                self._on_event("handle", "held")
+                if self.logger: self.logger.action("handle", f"{key}:down", self._front())
+        else:
+            self._handle_run = self._handle_run + 1 if rms < self.config.handle_rms_off else 0
+            if self._handle_run >= self.config.handle_off_blocks:
+                self._handle_held = False; self._handle_run = 0
+                self.router.hold_key(key, False)
+                self._on_event("handle", "released")
+                if self.logger: self.logger.action("handle", f"{key}:up", self._front())
 
     def _handle_utterance(self, utterance):
         text = self.transcriber.transcribe(utterance, self.config.sample_rate)

@@ -1,7 +1,7 @@
 import wave
 import numpy as np
 from pathlib import Path
-from tink_agent.detector import goertzel, ToneDetector
+from tink_agent.detector import goertzel, ToneDetector, NoiseBurstDetector
 from tink_agent.config import Config
 
 FIX = Path(__file__).parent / "fixtures" / "tones.wav"
@@ -99,3 +99,75 @@ def test_real_speech_fires_no_slots_with_eight_bins():
         if slot is not None:
             fires.append(slot)
     assert fires == []
+
+
+def _blk(freqs, amp=6000, sr=16000, n=800):
+    t = np.arange(n) / sr
+    return sum(np.sin(2 * np.pi * f * t) * amp for f in freqs)
+
+
+def test_per_slot_tonality_override_admits_inharmonic_sample():
+    # A bell-like block: energy split over three partials, so the best single
+    # bin holds ~1/3 of the energy and fails the default 0.5 tonality test.
+    bell = _blk([3949, 5363, 7000])
+    tones = {1: 1000, 2: 380, 3: 3949}
+    strict = ToneDetector(tones, 300, 0.8, 300, 16000, tonality_min=0.5)
+    assert strict.process(bell) is None
+    loose = ToneDetector(tones, 300, 0.8, 300, 16000, tonality_min=0.5,
+                         tonality_min_by_slot={3: 0.25})
+    assert loose.process(bell) == 3
+    # The override must not loosen the other bins: a noisy block near 1000 Hz
+    # with the same 1/3 tonality still fails.
+    noisy = _blk([1000, 1700, 2600])
+    fresh = ToneDetector(tones, 300, 0.8, 300, 16000, tonality_min=0.5,
+                         tonality_min_by_slot={3: 0.25})
+    assert fresh.process(noisy) is None
+
+
+def test_press_survives_brief_dip_but_ends_after_hangover():
+    tone = _blk([1500]); silence = np.zeros(800)
+    det = ToneDetector({1: 1500}, 300, 0.8, 300, 16000)
+    fires = [det.process(tone) for _ in range(10)]
+    assert fires[0] == 1 and fires.count(1) == 1
+    # A 2-block dip (beating/decay) must not re-fire the same press.
+    for _ in range(2):
+        assert det.process(silence) is None
+    assert all(det.process(tone) is None for _ in range(10))
+    # A real gap (>= 8 sub-floor blocks) ends the press; the next tone fires.
+    for _ in range(8):
+        det.process(silence)
+    assert det.process(tone) == 1
+
+
+def _noise(rms=1500, seed=0):
+    rng = np.random.default_rng(seed)
+    x = rng.standard_normal(800)
+    return x / np.sqrt(np.mean(x * x)) * rms
+
+
+def _voiced(f0=120, rms=1500):
+    t = np.arange(800) / 16000
+    x = sum(np.sin(2 * np.pi * f0 * k * t) / k for k in range(1, 12))  # pitched, harmonic
+    return x / np.sqrt(np.mean(x * x)) * rms
+
+
+def test_noise_burst_fires_once_after_min_blocks_and_rearms_after_silence():
+    d = NoiseBurstDetector(rms_min=300, voicing_max=0.35, min_blocks=4, hang_blocks=3)
+    fires = [d.process(_noise(seed=i)) for i in range(10)]
+    assert fires == [False, False, False, True, False, False, False, False, False, False]
+    assert d.active
+    for _ in range(3):
+        d.process(np.zeros(800))
+    assert not d.active
+    assert [d.process(_noise(seed=i)) for i in range(4)][-1] is True
+
+
+def test_noise_burst_ignores_voiced_speech_and_tones():
+    d = NoiseBurstDetector(rms_min=300, voicing_max=0.35, min_blocks=4)
+    assert not any(d.process(_voiced()) for _ in range(20))
+    d2 = NoiseBurstDetector(rms_min=300, voicing_max=0.35, min_blocks=4)
+    assert not any(d2.process(_noise(seed=i), tone_active=True) for i in range(20))
+    # A short unvoiced burst (a fricative) shorter than min_blocks never fires.
+    d3 = NoiseBurstDetector(rms_min=300, voicing_max=0.35, min_blocks=4)
+    seq = [_noise(seed=1), _noise(seed=2), _noise(seed=3), _voiced()] * 3
+    assert not any(d3.process(b) for b in seq)

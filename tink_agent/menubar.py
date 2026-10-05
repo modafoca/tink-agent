@@ -5,7 +5,7 @@ import sys
 import time
 import rumps
 from .config import Config, DEFAULT_PATH
-from .audio import AudioCapture, DeviceNotFound, reinitialize as audio_reinitialize
+from .audio import AudioCapture, DeviceNotFound, device_present, reinitialize as audio_reinitialize
 from .detector import ToneDetector, VoiceGate
 from .transcribe import Transcriber, resolve_stt
 from .actions import ActionRouter
@@ -67,6 +67,7 @@ class TinkAgentApp(rumps.App):
         # Start audio AFTER the run loop is up (opening the mic can block/prompt;
         # doing it in __init__ would delay run() and the status item appearing).
         self._autostart_done = False
+        self._watchdog_ticks = 0
         self._timer = rumps.Timer(self._tick, 0.2)
         self._timer.start()
 
@@ -74,7 +75,8 @@ class TinkAgentApp(rumps.App):
         c = self.config
         det = ToneDetector(c.tones, c.tone_rms_min, c.tone_dominance_min,
                            c.tone_debounce_ms, c.sample_rate,
-                           tonality_min=c.tone_tonality_min)
+                           tonality_min=c.tone_tonality_min,
+                           tonality_min_by_slot=c.tone_tonality_min_by_slot)
         vg = VoiceGate(c.vad_rms_start, c.vad_rms_end, c.vad_hangover_ms,
                        c.min_utterance_ms, c.sample_rate, c.block_size,
                        c.max_utterance_ms)
@@ -122,6 +124,10 @@ class TinkAgentApp(rumps.App):
         if not self.config.onboarding_done and not self._onboarding_shown:
             self._onboarding_shown = True
             self.open_onboarding(None)
+        self._watchdog_ticks += 1
+        if self._watchdog_ticks >= 10:          # every 2 s
+            self._watchdog_ticks = 0
+            self._watchdog()
         capturing = self.capture is not None and self.engine.is_capturing
         if capturing != self._icon_active:
             self._icon_active = capturing
@@ -201,6 +207,23 @@ class TinkAgentApp(rumps.App):
             self.stop_listening(None)
             self.start_listening(None)
 
+    def set_handle_key(self, name: str):
+        """Key held while the Ting is live ("" = off). Applies immediately; if the
+        old key is currently held, release it first so nothing stays stuck."""
+        old = self.config.handle_key
+        if old and getattr(self.engine, "_handle_held", False):
+            self.engine.router.hold_key(old, False)
+            self.engine._handle_held = False
+            self.engine._handle_run = 0
+        self.config.handle_key = (name or "").strip().lower()
+        self.config.save()
+
+    def set_handle_release_seconds(self, seconds: float):
+        """Silence needed before the push-to-talk key is released."""
+        blocks = max(1, int(round(float(seconds) * self.config.sample_rate / self.config.block_size)))
+        self.config.handle_off_blocks = blocks
+        self.config.save()
+
     def set_slot_action(self, slot, action_id: str):
         """Assign the action a slot fires. Persists to config and updates the
         running router so it takes effect without restarting capture."""
@@ -265,6 +288,32 @@ class TinkAgentApp(rumps.App):
     def complete_onboarding(self):
         self.config.onboarding_done = True
         self.config.save()
+
+    def _watchdog(self):
+        """Reconnect capture after the input device disappears and returns.
+        Unplugging the USB audio adapter makes CoreAudio stop delivering blocks
+        (the stream never errors out); a device that was missing at startup
+        never got a stream at all. In both cases, once the configured device is
+        listed again, rescan PortAudio and reopen."""
+        dead = self.capture is None or self.capture.stalled()
+        if not dead:
+            return
+        try:
+            audio_reinitialize()
+        except Exception:  # noqa: BLE001
+            pass
+        if not device_present(self.config.device_name):
+            if self.capture is not None:
+                self.stop_listening(None)
+                self.engine.reset_handle()
+            self._status = "error: mic not found"
+            return
+        self.stop_listening(None)
+        self.engine.reset_handle()
+        self.start_listening(None)
+        if self.capture is not None:
+            self._status = "listening"
+            self._on_event("audio", "reconnected")
 
     # --- capture lifecycle ---
     def start_listening(self, _):

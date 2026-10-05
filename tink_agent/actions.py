@@ -59,6 +59,15 @@ class ActionRouter:
             self._kb = ctrl
         return self._kb
 
+    def hold_key(self, name: str, down: bool) -> None:
+        """Press (down=True) or release a named key, e.g. "f13", for push-to-talk.
+        Runs on the main thread like every other keystroke."""
+        def _do(_):
+            kb = self.kb
+            key = getattr(kb.Key, name, None) or name
+            (kb.press if down else kb.release)(key)
+        self._dispatch(lambda: self._run(_do, None))
+
     def fire_slot(self, slot: int) -> str:
         action = self.slot_actions.get(slot)
         if action is None:
@@ -67,6 +76,13 @@ class ActionRouter:
             return "noop"
         # Defer the actual keystroke to the main thread; return the action id
         # now so the caller can emit events / log without waiting.
+        self._dispatch(lambda a=action: self._run(self._perform, a))
+        return action
+
+    def fire_action(self, action: str) -> str:
+        """Fire an action id directly (not tied to a tone slot)."""
+        if not action or action == "noop":
+            return "noop"
         self._dispatch(lambda a=action: self._run(self._perform, a))
         return action
 

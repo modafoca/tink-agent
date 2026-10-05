@@ -120,3 +120,28 @@ def test_device_menu_items_substring_match_is_connected():
 def test_device_name_from_title_round_trip_and_placeholder():
     assert device_name_from_title("USB Audio Device") == "USB Audio Device"
     assert device_name_from_title("USB Audio Device" + NOT_CONNECTED_SUFFIX) is None
+
+
+def test_capture_stalled_when_blocks_stop_arriving():
+    from tink_agent.audio import AudioCapture
+    class FakeStream:
+        def __init__(self, **kw): self.cb = kw["callback"]
+        def start(self): pass
+        def stop(self): pass
+        def close(self): pass
+    cap = AudioCapture("dev", 16000, 800, on_block=lambda b: None,
+                       stream_factory=FakeStream, resolve_fn=lambda n: 0)
+    assert not cap.stalled()                 # not started: nothing to watch
+    cap.start()
+    assert not cap.stalled(3.0, now=cap.last_block_at + 1.0)
+    assert cap.stalled(3.0, now=cap.last_block_at + 3.5)
+    cap._callback(np.zeros((800, 1), dtype=np.int16), 800, None, None)
+    assert not cap.stalled(3.0, now=cap.last_block_at + 1.0)
+
+
+def test_device_present_by_name():
+    from tink_agent.audio import device_present
+    devs = [{"name": "CUBILUX HLMS-C4 Line IN", "max_input_channels": 2},
+            {"name": "Speakers", "max_input_channels": 0}]
+    assert device_present("CUBILUX HLMS-C4 Line IN", query_fn=lambda: devs)
+    assert not device_present("USB Audio Device", query_fn=lambda: devs)

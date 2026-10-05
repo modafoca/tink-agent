@@ -18,6 +18,8 @@ from . import audio, theme
 from .transcribe import BACKEND_ORDER, BACKEND_LABELS
 
 W = 440                  # window width; height computed in _build
+HANDLE_KEY_TITLES = ["Off", "F13", "F14", "F15", "F16", "F17", "F18", "F19"]
+HANDLE_RELEASE_SECONDS = [1.0, 1.5, 2.0, 2.5, 3.0, 4.0, 5.0]
 PW, PH = 420, 460        # separate app-picker window
 ROW_H = 26
 
@@ -71,7 +73,7 @@ class SettingsController(NSObject):
 
     # --- build ---
     def _build(self):
-        H = 512
+        H = 638
         win, c = theme.window("TINK Agent", W, H)
         win.setTitle_("TINK Agent")
         self.window = win
@@ -128,6 +130,23 @@ class SettingsController(NSObject):
         ibody.addSubview_(theme.hairline(15, 88, cw - 15))
         c.addSubview_(icard); y += 3 * 44 + 2 + 14
 
+        # Handle (push-to-talk key held while the mic is live)
+        hh = theme.section_header("Handle"); hh.setFrame_(NSMakeRect(m + 13, y, 200, 16))
+        c.addSubview_(hh); y += 22
+        hcard = theme.card(m, y, cw, 2 * 44 + 2)
+        hbody = hcard.contentView()
+        kr, self.popup_handle_key = theme.popup_row("Push-to-talk key", cw, 0)
+        self.popup_handle_key.addItemsWithTitles_(HANDLE_KEY_TITLES)
+        self._wire_popup(self.popup_handle_key, self._handle_key_cb)
+        hbody.addSubview_(kr)
+        rr, self.popup_handle_release = theme.popup_row("Release after", cw, 44)
+        self.popup_handle_release.addItemsWithTitles_(
+            [f"{s:g} s of silence" for s in HANDLE_RELEASE_SECONDS])
+        self._wire_popup(self.popup_handle_release, self._handle_release_cb)
+        hbody.addSubview_(rr)
+        hbody.addSubview_(theme.hairline(15, 44, cw - 15))
+        c.addSubview_(hcard); y += 2 * 44 + 2 + 14
+
         self.btn_setup = theme.accent_button("Set Up TINK…", self._setup,
                                              (W - 160) / 2.0, y, 160, 32)
         c.addSubview_(self.btn_setup); y += 44
@@ -165,6 +184,13 @@ class SettingsController(NSObject):
         if backend in BACKEND_ORDER:
             self.popup_backend.selectItemAtIndex_(BACKEND_ORDER.index(backend))
         self._refresh_devices()
+        key = (self.app.config.handle_key or "").lower()
+        keys = [k.lower() for k in HANDLE_KEY_TITLES]
+        self.popup_handle_key.selectItemAtIndex_(keys.index(key) if key in keys else 0)
+        secs = self.app.config.handle_off_blocks * self.app.config.block_size / self.app.config.sample_rate
+        nearest = min(range(len(HANDLE_RELEASE_SECONDS)),
+                      key=lambda i: abs(HANDLE_RELEASE_SECONDS[i] - secs))
+        self.popup_handle_release.selectItemAtIndex_(nearest)
         n = len(self.app.config.target_apps or [])
         self.btn_apps.setTitle_(f"{n} apps…" if n else "Any app")
         if self.app.config.onboarding_done:
@@ -223,6 +249,15 @@ class SettingsController(NSObject):
         if name is not None:
             self.app.set_device_name(name)
             self._refresh_devices()
+
+    def _handle_key_cb(self, title):
+        self.app.set_handle_key("" if title == "Off" else title.lower())
+
+    def _handle_release_cb(self, title):
+        try:
+            self.app.set_handle_release_seconds(float(title.split()[0]))
+        except ValueError:
+            pass
 
     def _open_apps(self): self.openApps_(None)
 

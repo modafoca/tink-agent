@@ -14,6 +14,7 @@ class FakeKey:
     right = "RIGHT"
     space = "SPACE"
     backspace = "BACKSPACE"
+    f13 = "F13"
 
 
 class FakeKeyboard:
@@ -199,3 +200,18 @@ def test_unknown_action_is_safe_noop():
     r = ActionRouter({1: "bogus"}, keyboard=kb)
     assert r.fire_slot(1) == "bogus"                # returned for logging
     assert kb.events == []                          # but nothing performed
+
+
+def test_hold_key_press_and_release():
+    kb = FakeKeyboard()
+    r = ActionRouter({}, keyboard=kb)
+    r.hold_key("f13", True)
+    r.hold_key("f13", False)
+    assert kb.events == [("press", "F13"), ("release", "F13")]
+
+
+def test_hold_key_unknown_name_falls_back_to_literal():
+    kb = FakeKeyboard()
+    r = ActionRouter({}, keyboard=kb)
+    r.hold_key("§", True)
+    assert kb.events == [("press", "§")]

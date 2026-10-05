@@ -15,7 +15,14 @@ def goertzel(samples: np.ndarray, freq: float, sample_rate: int) -> float:
 
 class ToneDetector:
     def __init__(self, tones, rms_min, dominance_min, debounce_ms, sample_rate,
-                 tonality_min=0.5):
+                 tonality_min=0.5, tonality_min_by_slot=None):
+        # Optional per-slot tonality override, e.g. {3: 0.15} for an inharmonic bell
+        # whose energy splits across partials.
+        self.tonality_min_by_slot = dict(tonality_min_by_slot or {})
+        # A press ends only after this many consecutive sub-floor blocks, so a
+        # decaying/beating sample (a bell) does not re-fire after a brief dip.
+        self._silence_hang_blocks = 8
+        self._silent = 0
         self.tones = dict(tones)
         self.rms_min = rms_min
         self.dominance_min = dominance_min
@@ -38,9 +45,12 @@ class ToneDetector:
             self.tone_active = False
             if self._cooldown > 0:
                 self._cooldown -= 1
-            self._was_tone_active = False
-            self._last_slot = None
+            self._silent += 1
+            if self._silent >= self._silence_hang_blocks:
+                self._was_tone_active = False
+                self._last_slot = None
             return None
+        self._silent = 0
 
         mags = {slot: goertzel(block, f, self.sample_rate) for slot, f in self.tones.items()}
         total = sum(mags.values()) + 1e-9
@@ -54,8 +64,9 @@ class ToneDetector:
         n = block.size
         block_energy = float(np.sum(block * block)) + 1e-9
         tonality = mags[best_slot] / (block_energy * n / 2.0)
+        tmin = self.tonality_min_by_slot.get(best_slot, self.tonality_min)
         self.tone_active = (dominance >= self.dominance_min
-                            and tonality >= self.tonality_min)
+                            and tonality >= tmin)
 
         if not self.tone_active:
             # Soft fail: dominance/tonality dipped this block (typical at the
@@ -138,3 +149,57 @@ class VoiceGate:
         else:
             self._silence = 0
         return None
+
+
+class NoiseBurstDetector:
+    """Recognise a sustained *unvoiced* loud sound (e.g. the FX Mic's factory
+    applause sample) as a button. Speech has pitch in nearly every half second;
+    applause never does. Fires once per burst after `min_blocks` consecutive
+    loud, unvoiced, non-tone blocks; re-arms after `hang_blocks` of silence.
+
+    `active` stays True for the rest of the burst so callers can treat it like a
+    tone (not "sound" for push-to-talk, not speech for the voice gate)."""
+
+    def __init__(self, rms_min=300.0, voicing_max=0.35, min_blocks=12,
+                 hang_blocks=8, lag_min=40, lag_max=200):
+        self.rms_min = float(rms_min)
+        self.voicing_max = float(voicing_max)
+        self.min_blocks = int(min_blocks)
+        self.hang_blocks = int(hang_blocks)
+        self.lag_min, self.lag_max = int(lag_min), int(lag_max)
+        self._run = 0
+        self._silent = 0
+        self._fired = False
+        self.active = False
+
+    @staticmethod
+    def voicing(block, lag_min=40, lag_max=200) -> float:
+        b = np.asarray(block, dtype=np.float64).reshape(-1)
+        b = b - b.mean()
+        e = float(np.dot(b, b))
+        if e < 1.0:
+            return 0.0
+        ac = np.correlate(b, b, "full")[len(b) - 1:] / e
+        return float(ac[lag_min:lag_max].max())
+
+    def process(self, block, tone_active: bool = False) -> bool:
+        b = np.asarray(block, dtype=np.float64).reshape(-1)
+        rms = float(np.sqrt(np.mean(b * b))) if b.size else 0.0
+        if rms < self.rms_min:
+            self._run = 0
+            self._silent += 1
+            if self._silent >= self.hang_blocks:
+                self._fired = False
+                self.active = False
+            return False
+        self._silent = 0
+        unvoiced = (not tone_active) and self.voicing(b, self.lag_min, self.lag_max) < self.voicing_max
+        self._run = self._run + 1 if unvoiced else 0
+        if self._run >= self.min_blocks:
+            self.active = True
+            if not self._fired:
+                self._fired = True
+                return True
+        elif self._run == 0:
+            self.active = False
+        return False
